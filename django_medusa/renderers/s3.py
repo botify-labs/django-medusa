@@ -11,6 +11,30 @@ from boto.s3.connection import S3Connection
 __all__ = ('S3StaticSiteRenderer', )
 
 
+class BucketCache(object):
+    BUCKET_CACHE = {}
+    CONN = None
+
+    @classmethod
+    def s3_conn(cls):
+        if not cls.CONN:
+            cls.CONN = S3Connection(
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
+            )
+        return cls.CONN
+
+    @classmethod
+    def _get_bucket(cls, bucket=None):
+        if bucket in cls.BUCKET_CACHE:
+            return cls.BUCKET_CACHE[bucket]
+        if not bucket:
+            bucket = settings.MEDUSA_AWS_STORAGE_BUCKET_NAME or settings.AWS_STORAGE_BUCKET_NAME
+        cls.BUCKET_CACHE[bucket] = cls.s3_conn().get_bucket(bucket)
+        cls.BUCKET_CACHE[bucket].configure_website("index.html", "500.html")
+        return cls.BUCKET_CACHE[bucket]
+
+
 def _get_cf():
     from boto.cloudfront import CloudFrontConnection
     return CloudFrontConnection(
@@ -46,6 +70,68 @@ def _upload_to_s3(key, file):
         )
     key.make_public()
 
+
+def _s3_render_path(args):
+    client, path, view = args
+    if not client:
+        client = Client()
+
+    # Render the view
+    # If path is a tuple or a list
+    # It means that django-hosts is installed
+    if isinstance(path, dict):
+        host = ".".join((path["host"], settings.PARENT_HOST))
+        bucket = BucketCache._get_bucket(path.get("bucket", None))
+        path = path["path"]
+    else:
+        host = None
+        bucket = BucketCache._get_bucket()
+
+    if host:
+        resp = client.get(path, HTTP_HOST=host)
+    else:
+        resp = client.get(path)
+
+    if resp.status_code != 200:
+        raise Exception('path {} has returned a {} code'.format(path, resp.status_code))
+
+    # Default to "index.html" as the upload path if we're in a dir listing.
+    outpath = path
+    if path.endswith("/"):
+        outpath += "index.html"
+    if outpath.startswith('/'):
+        outpath = outpath[1:]
+
+    key = bucket.get_key(outpath) or bucket.new_key(outpath)
+    key.content_type = resp['Content-Type']
+
+    temp_file = cStringIO.StringIO(resp.content)
+    md5 = key.compute_md5(temp_file)
+
+    # If key is new, there's no etag yet
+    if not key.etag:
+        _upload_to_s3(key, temp_file)
+        message = "Creating"
+
+    else:
+        etag = key.etag or ''
+        # for some weird reason, etags are quoted, strip them
+        etag = etag.strip('"').strip("'")
+        if etag not in md5:
+            #_upload_to_s3(key, temp_file)
+            message = "Updating"
+        else:
+            message = "Skipping"
+
+    print "%s http://%s%s" % (
+        message,
+        bucket.get_website_endpoint(),
+        outpath
+    )
+    temp_file.close()
+    return [path, outpath]
+
+
 class S3StaticSiteRenderer(BaseStaticSiteRenderer):
     """
     A variation of BaseStaticSiteRenderer that deploys directly to S3
@@ -58,8 +144,6 @@ class S3StaticSiteRenderer(BaseStaticSiteRenderer):
       * AWS_SECRET_ACCESS_KEY
       * AWS_STORAGE_BUCKET_NAME
     """
-    BUCKET_CACHE = {}
-
     @classmethod
     def initialize_output(cls):
         cls.all_generated_paths = []
@@ -74,87 +158,7 @@ class S3StaticSiteRenderer(BaseStaticSiteRenderer):
             )
         return self._s3_conn
 
-    def _get_bucket(self, bucket=None):
-        if bucket in self.BUCKET_CACHE:
-            return self.BUCKET_CACHE[bucket]
-        if not bucket:
-            bucket = self.bucket
-        self.BUCKET_CACHE[bucket] = self.s3_conn.get_bucket(bucket)
-        self.BUCKET_CACHE[bucket].configure_website("index.html", "500.html")
-        return self.BUCKET_CACHE[bucket]
-
-    def render_path(self, path=None, view=None):
-        return self._s3_render_path((self.client, path, view))
-
-    def _s3_render_path(self, args):
-        client, path, view = args
-        if not client:
-            client = Client()
-
-        # Render the view
-        # If path is a tuple or a list
-        # It means that django-hosts is installed
-        if isinstance(path, dict):
-            host = ".".join((path["host"], settings.PARENT_HOST))
-            bucket = self._get_bucket(path.get("bucket", None))
-            path = path["path"]
-        else:
-            host = None
-            bucket = self._get_bucket()
-
-        if host:
-            resp = client.get(path, HTTP_HOST=host)
-        else:
-            resp = client.get(path)
-
-        if resp.status_code != 200:
-            raise Exception('path {} has returned a {} code'.format(path, resp.status_code))
-
-        # Default to "index.html" as the upload path if we're in a dir listing.
-        outpath = path
-        if path.endswith("/"):
-            outpath += "index.html"
-        if outpath.startswith('/'):
-            outpath = outpath[1:]
-
-        key = bucket.get_key(outpath) or bucket.new_key(outpath)
-        key.content_type = resp['Content-Type']
-
-        temp_file = cStringIO.StringIO(resp.content)
-        md5 = key.compute_md5(temp_file)
-
-        # If key is new, there's no etag yet
-        if not key.etag:
-            _upload_to_s3(key, temp_file)
-            message = "Creating"
-
-        else:
-            etag = key.etag or ''
-            # for some weird reason, etags are quoted, strip them
-            etag = etag.strip('"').strip("'")
-            if etag not in md5:
-                #_upload_to_s3(key, temp_file)
-                message = "Updating"
-            else:
-                message = "Skipping"
-
-        print "%s http://%s%s" % (
-            message,
-            bucket.get_website_endpoint(),
-            outpath
-        )
-        temp_file.close()
-        return [path, outpath]
-
     def generate(self):
-        from boto.s3.connection import S3Connection
-
-        self.conn = S3Connection(
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
-        )
-        self.bucket = settings.MEDUSA_AWS_STORAGE_BUCKET_NAME or settings.AWS_STORAGE_BUCKET_NAME
-
         self.generated_paths = []
         if getattr(settings, "MEDUSA_MULTITHREAD", False):
             # Upload up to ten items at once via `multiprocessing`.
@@ -162,21 +166,20 @@ class S3StaticSiteRenderer(BaseStaticSiteRenderer):
             import itertools
 
             print "Uploading with up to 10 upload processes..."
-            pool = Pool(10)
+            pool = Pool()
             path_tuples = pool.map(
                 _s3_render_path,
-                ((None, None, self._final_s3_path(path), None) for path in self.paths),
+                ((None, path, None) for path in self.paths),
                 chunksize=5
             )
             pool.close()
             pool.join()
-
             self.generated_paths = list(itertools.chain(*path_tuples))
         else:
             # Use standard, serial upload.
             self.client = Client()
             for path in self.paths:
-                self.generated_paths += self.render_path(path=path)
+                self.generated_paths += _s3_render_path((self.client, path, None))
 
         type(self).all_generated_paths += self.generated_paths
 
