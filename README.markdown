@@ -21,6 +21,23 @@ in the `docs` dir:
 
 * [Tutorial 1: Hello World](https://github.com/mtigas/django-medusa/blob/master/docs/TUTORIAL-01.markdown)
 
+## Botify Labs Note
+
+We updated the initial lib from [mtigas](https://github.com/mtigas/django-medusa/blob/master/docs/TUTORIAL-01.markdown) to be compatible with multiple subdomains / AWS Cloudfront / `django-hosts` module.
+
+We nedeed to compute different paths depending on subdomains, but as you may know, it's not possible with cloudfront to push files in the same bucket but for different domains.
+
+So we change renderers to return a dict instead of a path, adding the host identifier and the S3 Bucket where path will be pushed
+
+Ex : 
+    {
+        "path": "/blog",
+        "host": "www",
+        "bucket": "my_s3_bucket
+    }
+
+`host` is the django-host identifier, it's needed because django's client module needs a HTTP_HOST to map the path with the good subdomain.
+
 ## Renderer classes
 
 Renderers live in `renderers.py` in each `INSTALLED_APP`.
@@ -166,6 +183,23 @@ paths that don't have an extension and are *not* HTML files (i.e.
 "/foo/json/", "/feeds/blog/", etc.), the mimetype from the "Content-Type" HTTP
 header will be manually defined for this URL in the `app.yaml` path.
 
+## Partial rendering
+
+Just implement a `render_static` method in your model.
+
+In this example, when you update a post, it will recompute the permalink page, but also blog's homepage. (Considering that you won't necessary need to compute other posts)
+
+    class BlogPostsRenderer(StaticSiteRenderer):
+        def render_static(self):
+            return ["/blog/", iterm.get_absolute_url()]
+
+Rendering of will be called in a `post_save`.
+
+If you want it to be computed asynchronously, we add in your settings.py : 
+
+    MEDUSA_UPDATE_ASYNC = True
+
+
 ## Usage
 
 1. Install `django-medusa` into your python path (TODO: setup.py) and add
@@ -191,8 +225,3 @@ disk-based backend.
     /project_dir/var/html/index.html
     /project_dir/var/html/about/index.html
     /project_dir/var/html/sitemap.xml
-
-
-
-
-
