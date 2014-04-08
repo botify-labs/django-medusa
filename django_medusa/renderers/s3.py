@@ -118,7 +118,7 @@ def _s3_render_path(args):
         # for some weird reason, etags are quoted, strip them
         etag = etag.strip('"').strip("'")
         if etag not in md5:
-            #_upload_to_s3(key, temp_file)
+            _upload_to_s3(key, temp_file)
             message = "Updating"
         else:
             message = "Skipping"
