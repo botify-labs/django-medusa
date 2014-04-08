@@ -56,7 +56,7 @@ def _get_distribution():
 
 def _upload_to_s3(key, file):
     key.set_contents_from_file(file, policy="public-read")
-    cache_time = 0
+    cache_time = getattr(settings, 'MEDUSA_S3_MAX_AGE', 0)
     now = datetime.now()
     expire_dt = now + timedelta(seconds=cache_time * 1.5)
     if cache_time != 0:
