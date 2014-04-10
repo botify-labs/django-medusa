@@ -54,7 +54,7 @@ def _get_distribution():
         return None
 
 
-def _upload_to_s3(key, file):
+def _upload_to_s3(key, file, response):
     cache_time = getattr(settings, 'MEDUSA_S3_MAX_AGE', 0)
     now = datetime.now()
     expire_dt = now + timedelta(seconds=cache_time * 1.5)
@@ -67,7 +67,10 @@ def _upload_to_s3(key, file):
             'Expires',
             expire_dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
         )
-    key.set_contents_from_file(file, policy="public-read")
+    if response.status_code in (301, 302):
+        key.set_redirect(response['location'])
+    else:
+        key.set_contents_from_file(file, policy="public-read")
     key.make_public()
 
 
@@ -92,7 +95,7 @@ def _s3_render_path(args):
     else:
         resp = client.get(path)
 
-    if resp.status_code != 200:
+    if resp.status_code not in (200, 301, 302):
         raise Exception('path {} has returned a {} code'.format(path, resp.status_code))
 
     # Default to "index.html" as the upload path if we're in a dir listing.
@@ -110,7 +113,7 @@ def _s3_render_path(args):
 
     # If key is new, there's no etag yet
     if not key.etag:
-        _upload_to_s3(key, temp_file)
+        _upload_to_s3(key, temp_file, resp)
         message = "Creating"
 
     else:
@@ -118,7 +121,7 @@ def _s3_render_path(args):
         # for some weird reason, etags are quoted, strip them
         etag = etag.strip('"').strip("'")
         if etag not in md5:
-            _upload_to_s3(key, temp_file)
+            _upload_to_s3(key, temp_file, resp)
             message = "Updating"
         else:
             message = "Skipping"
