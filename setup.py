@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 install_requires = [
-    'django',
+    'django >=1.8, <1.9',
 ]
 
 version = __import__('django_medusa').get_version()
