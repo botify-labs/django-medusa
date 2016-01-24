@@ -15,6 +15,17 @@ from boto.s3.connection import S3Connection
 __all__ = ('S3StaticSiteRenderer', )
 
 
+def _get_bucket_name():
+    bucket_name = None
+    if hasattr(settings, 'AWS_STORAGE_BUCKET_NAME'):
+        bucket_name = getattr(settings, 'AWS_STORAGE_BUCKET_NAME', None)
+    if hasattr(settings, 'MEDUSA_AWS_STORAGE_BUCKET_NAME'):
+        bucket_name = getattr(settings, 'MEDUSA_AWS_STORAGE_BUCKET_NAME', None)
+    if not bucket_name:
+        raise Exception("Bucket Name not defined on settings")
+    return bucket_name
+
+
 class BucketCache(object):
     BUCKET_CACHE = {}
     CONN = None
@@ -33,7 +44,7 @@ class BucketCache(object):
         if bucket in cls.BUCKET_CACHE:
             return cls.BUCKET_CACHE[bucket]
         if not bucket:
-            bucket = settings.MEDUSA_AWS_STORAGE_BUCKET_NAME or settings.AWS_STORAGE_BUCKET_NAME
+            bucket = _get_bucket_name()
         cls.BUCKET_CACHE[bucket] = cls.s3_conn().get_bucket(bucket)
         cls.BUCKET_CACHE[bucket].configure_website("index.html", "500.html")
         return cls.BUCKET_CACHE[bucket]
@@ -56,17 +67,6 @@ def _get_distribution():
         return conn.get_distribution_info(settings.AWS_DISTRIBUTION_ID)
     except:
         return None
-
-
-def _get_bucket_name():
-    bucket_name = None
-    if hasattr(settings, 'AWS_STORAGE_BUCKET_NAME'):
-        bucket_name = getattr(settings, 'AWS_STORAGE_BUCKET_NAME', None)
-    if hasattr(settings, 'MEDUSA_AWS_STORAGE_BUCKET_NAME'):
-        bucket_name = getattr(settings, 'MEDUSA_AWS_STORAGE_BUCKET_NAME', None)
-    if not bucket_name:
-        raise Exception("Bucket Name not defined on settings")
-    return bucket_name
 
 
 def _get_bucket():
