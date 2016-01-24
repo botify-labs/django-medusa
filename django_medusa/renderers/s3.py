@@ -1,20 +1,48 @@
+# -*- coding: utf-8 -*-
 from __future__ import print_function
 try:
     import cStringIO
 except ImportError:  # >=Python 3.
     from io import StringIO as cStringIO
+
 from datetime import timedelta, datetime
 from django.conf import settings
 from django.test.client import Client
 from .base import BaseStaticSiteRenderer
 
+from boto.s3.connection import S3Connection
+
 __all__ = ('S3StaticSiteRenderer', )
+
+
+class BucketCache(object):
+    BUCKET_CACHE = {}
+    CONN = None
+
+    @classmethod
+    def s3_conn(cls):
+        if not cls.CONN:
+            cls.CONN = S3Connection(
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
+            )
+        return cls.CONN
+
+    @classmethod
+    def _get_bucket(cls, bucket=None):
+        if bucket in cls.BUCKET_CACHE:
+            return cls.BUCKET_CACHE[bucket]
+        if not bucket:
+            bucket = settings.MEDUSA_AWS_STORAGE_BUCKET_NAME or settings.AWS_STORAGE_BUCKET_NAME
+        cls.BUCKET_CACHE[bucket] = cls.s3_conn().get_bucket(bucket)
+        cls.BUCKET_CACHE[bucket].configure_website("index.html", "500.html")
+        return cls.BUCKET_CACHE[bucket]
 
 
 def _get_cf():
     from boto.cloudfront import CloudFrontConnection
     return CloudFrontConnection(
-        aws_access_key_id=settings.AWS_ACCESS_KEY,
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
         aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
     )
 
@@ -51,42 +79,57 @@ def _get_bucket():
     return conn.get_bucket(bucket)
 
 
-def _upload_to_s3(key, file):
+def _upload_to_s3(key, file, response):
     key.set_contents_from_file(file, policy="public-read")
-
-    cache_time = 0
+    cache_time = getattr(settings, 'MEDUSA_S3_MAX_AGE', 0)
     now = datetime.now()
     expire_dt = now + timedelta(seconds=cache_time * 1.5)
     if cache_time != 0:
         key.set_metadata(
             'Cache-Control',
-            'max-age=%d, must-revalidate' % int(cache_time))
+            'max-age=%d, must-revalidate' % int(cache_time)
+        )
         key.set_metadata(
             'Expires',
-            expire_dt.strftime("%a, %d %b %Y %H:%M:%S GMT"))
+            expire_dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
+        )
+    if response.status_code in (301, 302):
+        key.set_redirect(response['location'])
+    else:
+        key.set_contents_from_file(file, policy="public-read")
     key.make_public()
 
 
-# Unfortunately split out from the class at the moment to allow rendering with
-# several processes via `multiprocessing`.
-# TODO: re-implement within the class if possible?
 def _s3_render_path(args):
-    client, bucket, path, view = args
+    client, path, view = args
     if not client:
         client = Client()
 
-    if not bucket:
-        bucket = _get_bucket()
-
     # Render the view
-    resp = client.get(path)
-    if resp.status_code != 200:
-        raise Exception
+    # If path is a tuple or a list
+    # It means that django-hosts is installed
+    if isinstance(path, dict):
+        host = ".".join((path["host"], settings.PARENT_HOST))
+        bucket = BucketCache._get_bucket(path.get("bucket", None))
+        path = path["path"]
+    else:
+        host = None
+        bucket = BucketCache._get_bucket()
+
+    if host:
+        resp = client.get(path, HTTP_HOST=host)
+    else:
+        resp = client.get(path)
+
+    if resp.status_code not in (200, 301, 302):
+        raise Exception('path {} has returned a {} code'.format(path, resp.status_code))
 
     # Default to "index.html" as the upload path if we're in a dir listing.
     outpath = path
     if path.endswith("/"):
         outpath += "index.html"
+    if outpath.startswith('/'):
+        outpath = outpath[1:]
 
     key = bucket.get_key(outpath) or bucket.new_key(outpath)
     key.content_type = resp['Content-Type']
@@ -96,7 +139,7 @@ def _s3_render_path(args):
 
     # If key is new, there's no etag yet
     if not key.etag:
-        _upload_to_s3(key, temp_file)
+        _upload_to_s3(key, temp_file, resp)
         message = "Creating"
 
     else:
@@ -104,7 +147,7 @@ def _s3_render_path(args):
         # for some weird reason, etags are quoted, strip them
         etag = etag.strip('"').strip("'")
         if etag not in md5:
-            _upload_to_s3(key, temp_file)
+            _upload_to_s3(key, temp_file, resp)
             message = "Updating"
         else:
             message = "Skipping"
@@ -134,8 +177,15 @@ class S3StaticSiteRenderer(BaseStaticSiteRenderer):
     def initialize_output(cls):
         cls.all_generated_paths = []
 
-    def render_path(self, path=None, view=None):
-        return _s3_render_path((self.client, self.bucket, path, view))
+    @property
+    def s3_conn(self):
+        if not hasattr(self, '_s3_conn'):
+            self._s3_conn = S3Connection(
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                is_secure=False
+            )
+        return self._s3_conn
 
     def generate(self):
         from boto.s3.connection import S3Connection
@@ -160,20 +210,26 @@ class S3StaticSiteRenderer(BaseStaticSiteRenderer):
 
             path_tuples = pool.map(
                 _s3_render_path,
-                ((None, None, path, None) for path in self.paths),
+                ((None, path, None) for path in self.paths),
                 chunksize=5
             )
             pool.close()
             pool.join()
-
             self.generated_paths = list(itertools.chain(*path_tuples))
         else:
             # Use standard, serial upload.
             self.client = Client()
             for path in self.paths:
-                self.generated_paths += self.render_path(path=path)
+                self.generated_paths += _s3_render_path((self.client, path, None))
 
         type(self).all_generated_paths += self.generated_paths
+
+    @staticmethod
+    def _final_s3_path(path):
+        if isinstance(path, dict):
+            bucket = path.get('bucket', settings.MEDUSA_AWS_STORAGE_BUCKET_NAME)
+            return ''.join((bucket, path["path"]))
+        return path
 
     @classmethod
     def finalize_output(cls):
