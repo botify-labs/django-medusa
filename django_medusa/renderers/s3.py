@@ -30,16 +30,24 @@ def _get_distribution():
         return None
 
 
+def _get_bucket_name():
+    bucket_name = None
+    if hasattr(settings, 'AWS_STORAGE_BUCKET_NAME'):
+        bucket_name = getattr(settings, 'AWS_STORAGE_BUCKET_NAME', None)
+    if hasattr(settings, 'MEDUSA_AWS_STORAGE_BUCKET_NAME'):
+        bucket_name = getattr(settings, 'MEDUSA_AWS_STORAGE_BUCKET_NAME', None)
+    if not bucket_name:
+        raise Exception("Bucket Name not defined on settings")
+    return bucket_name
+
+
 def _get_bucket():
     from boto.s3.connection import S3Connection
     conn = S3Connection(
         aws_access_key_id=settings.AWS_ACCESS_KEY,
         aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
     )
-
-    bucket = settings.AWS_STORAGE_BUCKET_NAME
-    if settings.MEDUSA_AWS_STORAGE_BUCKET_NAME:
-        bucket = settings.MEDUSA_AWS_STORAGE_BUCKET_NAME
+    bucket = _get_bucket_name()
     return conn.get_bucket(bucket)
 
 
@@ -50,9 +58,11 @@ def _upload_to_s3(key, file):
     now = datetime.now()
     expire_dt = now + timedelta(seconds=cache_time * 1.5)
     if cache_time != 0:
-        key.set_metadata('Cache-Control',
+        key.set_metadata(
+            'Cache-Control',
             'max-age=%d, must-revalidate' % int(cache_time))
-        key.set_metadata('Expires',
+        key.set_metadata(
+            'Expires',
             expire_dt.strftime("%a, %d %b %Y %H:%M:%S GMT"))
     key.make_public()
 
@@ -134,9 +144,7 @@ class S3StaticSiteRenderer(BaseStaticSiteRenderer):
             aws_access_key_id=settings.AWS_ACCESS_KEY,
             aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
         )
-        bucket_name = settings.AWS_STORAGE_BUCKET_NAME
-        if settings.MEDUSA_AWS_STORAGE_BUCKET_NAME:
-            bucket_name = settings.MEDUSA_AWS_STORAGE_BUCKET_NAME
+        bucket_name = _get_bucket_name()
         self.bucket = self.conn.get_bucket(bucket_name)
         self.bucket.configure_website("index.html", "500.html")
         self.server_root_path = self.bucket.get_website_endpoint()
