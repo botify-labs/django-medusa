@@ -34,7 +34,7 @@ class BucketCache(object):
     def s3_conn(cls):
         if not cls.CONN:
             cls.CONN = S3Connection(
-                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_access_key_id=settings.AWS_ACCESS_KEY,
                 aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
             )
         return cls.CONN
@@ -135,6 +135,7 @@ def _s3_render_path(args):
     key.content_type = resp['Content-Type']
 
     temp_file = cStringIO.StringIO(resp.content)
+    temp_file.seek(0)
     md5 = key.compute_md5(temp_file)
 
     # If key is new, there's no etag yet
