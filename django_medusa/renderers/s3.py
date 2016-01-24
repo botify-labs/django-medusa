@@ -137,7 +137,7 @@ class S3StaticSiteRenderer(BaseStaticSiteRenderer):
         bucket_name = settings.AWS_STORAGE_BUCKET_NAME
         if settings.MEDUSA_AWS_STORAGE_BUCKET_NAME:
             bucket_name = settings.MEDUSA_AWS_STORAGE_BUCKET_NAME
-        self.conn.get_bucket(bucket_name)
+        self.bucket = self.conn.get_bucket(bucket_name)
         self.bucket.configure_website("index.html", "500.html")
         self.server_root_path = self.bucket.get_website_endpoint()
 
