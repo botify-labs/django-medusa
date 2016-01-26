@@ -96,6 +96,7 @@ def _upload_to_s3(key, file, response):
     if response.status_code in (301, 302):
         key.set_redirect(response['location'])
     else:
+        file.seek(0)
         key.set_contents_from_file(file, policy="public-read")
     key.make_public()
 
